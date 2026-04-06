@@ -12,7 +12,7 @@ class ExperimentConfig:
     max_epochs: int = 300
     num_workers = 0
     alpha_list: List[float] = (0.0,0.5,1.0)
-    embedding_dim: int = 512
+    embedding_dim: int = 128
     fusion: str = "linear"   # linear | gated
     
     version: str = "v3"

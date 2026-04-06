@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 
 from config import ExperimentConfig
 from utils.featLoader import LoadData
-from model import FOP
+from model import FOP, SBNet
 from utils.trainer import Trainer
 from utils.evaluator import Evaluator
 from utils.earlystop import EarlyStopping
@@ -118,7 +118,7 @@ def main():
         face.shape[1],
     )
 
-    model = FOP(
+    model = SBNet(
         config=config,
         face_dim=face.shape[1],
         voice_dim=audio.shape[1],
