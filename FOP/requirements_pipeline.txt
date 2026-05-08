@@ -1,0 +1,33 @@
+# Pipeline dependencies (Task 1–4)
+# Install with: pip install -r requirements_pipeline.txt
+#
+# Wav2Lip must be cloned separately:
+#   git clone https://github.com/Rudrabha/Wav2Lip
+#   Download checkpoint: https://github.com/Rudrabha/Wav2Lip#getting-the-weights
+#   Place at: Wav2Lip/checkpoints/wav2lip_gan.pth
+
+# Stage 1 — audio/video processing
+ffmpeg-python
+
+# Stage 2 — speech recognition + language detection
+openai-whisper
+
+# Stage 3 — translation (no API key required)
+deep-translator
+
+# Stage 4 — voice cloning + TTS (Coqui XTTS v2)
+TTS
+
+# Stage 5 — embedding extraction
+speechbrain
+facenet-pytorch
+
+# Video frame extraction
+opencv-python
+
+# Core ML
+torch
+torchaudio
+
+# Visualisation (optional, for Task 4 sweep plot)
+matplotlib

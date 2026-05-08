@@ -1,10 +1,11 @@
 from dataclasses import dataclass
 from typing import List
 import logging
+import os
 
 @dataclass
 class ExperimentConfig:
-    home_dir = "/home/shah/Downloads/polysim-main/FOP"
+    home_dir: str = os.path.dirname(os.path.abspath(__file__))
     seed: int = 1
     device: str = "cuda"
     lr: float = 1e-3
