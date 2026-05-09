@@ -26,8 +26,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import soundfile as sf
 import torch
-import torchaudio
 from facenet_pytorch import MTCNN, InceptionResnetV1
 from speechbrain.inference.speaker import EncoderClassifier
 
@@ -69,15 +69,18 @@ def extract_ecapa(audio_path: str) -> np.ndarray:
     """
     model = _get_ecapa()
 
-    waveform, sample_rate = torchaudio.load(audio_path)
+    # Load with soundfile (no DLL issues on Windows); pipeline produces 16 kHz mono.
+    audio_np, sample_rate = sf.read(audio_path, dtype="float32", always_2d=False)
 
-    # Resample to 16 kHz if needed
+    # Resample to 16 kHz if needed using scipy
     if sample_rate != 16000:
-        resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)
-        waveform = resampler(waveform)
+        from scipy.signal import resample_poly
+        import math
+        gcd = math.gcd(16000, sample_rate)
+        audio_np = resample_poly(audio_np, 16000 // gcd, sample_rate // gcd).astype(np.float32)
 
     # SpeechBrain expects (1, T) float tensor on the correct device
-    waveform = waveform.mean(dim=0, keepdim=True).to(DEVICE)
+    waveform = torch.from_numpy(audio_np).unsqueeze(0).to(DEVICE)
 
     with torch.no_grad():
         embedding = model.encode_batch(waveform)  # (1, 1, D)

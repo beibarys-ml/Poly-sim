@@ -1,24 +1,24 @@
 """
-run_experiments.py — Baseline comparison and synthetic data analysis (Tasks 3 & 4)
+run_experiments.py — Baseline comparison + synthetic data sweep (Tasks 3 & 4)
 
-Runs three FOP training experiments and prints a comparison table:
+Experiments:
   A) Original German data only
-  B) Synthetic German data only
-  C) Mixed (original + synthetic)
+  B) Synthetic German data only  (skipped if CSV missing)
+  C) Mixed (original + synthetic) (skipped if CSV missing)
 
-Bonus (Task 4):
-  synthetic_data_sweep() — varies synthetic sample count per identity to find
-  the saturation point where additional synthetic data yields < 0.5% accuracy gain.
+Task 4 (Bonus): --sweep  sweeps synthetic data fraction per identity.
+
+All results saved under ./results/ (or --results_dir):
+  results/
+    {exp_name}/results.csv    ← per-epoch metrics
+    {exp_name}/summary.csv    ← best metrics
+    comparison.csv            ← side-by-side table
+    sweep.csv                 ← sweep results (--sweep only)
 
 Usage:
-  # Run all three comparison experiments:
   python run_experiments.py
-
-  # Run bonus sweep analysis:
   python run_experiments.py --sweep
-
-  # Specify custom CSV paths:
-  python run_experiments.py --orig_csv feature_tracker/v3_train_German.csv
+  python run_experiments.py --results_dir ./my_results
 """
 
 import argparse
@@ -30,149 +30,34 @@ import os
 import random
 import sys
 from collections import defaultdict
-from pathlib import Path
 
-import torch
-from torch.utils.data import DataLoader
-
-# Ensure the FOP directory is on the path when run directly
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import ExperimentConfig
-from model import FOP
-from utils.featLoader import LoadData
-from utils.trainer import Trainer
-from utils.evaluator import Evaluator
-from utils.earlystop import EarlyStopping
+from main import main as _train
 
 logger = logging.getLogger("run_experiments")
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s][%(name)s] %(message)s")
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def make_loader(csv_path: str, config: ExperimentConfig, shuffle: bool = False):
-    dataset = LoadData(
-        csv_path=csv_path,
-        config=config,
-        audio_encoder="ecappa_feats_path",
-        modality="audiovisual",
-    )
-    loader = DataLoader(
-        dataset,
-        batch_size=config.batch_size,
-        shuffle=shuffle,
-        num_workers=config.num_workers,
-        pin_memory=True,
-        drop_last=False,
-    )
-    return dataset, loader
-
-
-def train_and_evaluate(
-    train_csv: str,
-    test_csv: str,
-    unseen_csv: str,
-    config: ExperimentConfig,
-    experiment_name: str = "experiment",
-) -> dict[float, dict]:
-    """
-    Train FOP for all alphas in config.alpha_list and return accuracy results.
-
-    Returns:
-        dict keyed by alpha → {'seen': float, 'unseen': float, 'best_epoch': int}
-    """
-    torch.manual_seed(config.seed)
-    if config.device == "cuda" and torch.cuda.is_available():
-        torch.cuda.manual_seed_all(config.seed)
-
-    _, train_loader   = make_loader(train_csv,   config, shuffle=True)
-    test_dataset,   _ = make_loader(test_csv,    config, shuffle=False)
-    unseen_dataset, _ = make_loader(unseen_csv,  config, shuffle=False)
-
-    audio_sample, face_sample, _ = next(iter(train_loader))
-
-    results = {}
-
-    for alpha in config.alpha_list:
-        logger.info("[%s] Training with alpha=%.3f", experiment_name, alpha)
-
-        model = FOP(
-            config=config,
-            face_dim=face_sample.shape[1],
-            voice_dim=audio_sample.shape[1],
-        )
-
-        trainer  = Trainer(model, config)
-        evaluator = Evaluator(model, config)
-        stopper  = EarlyStopping(
-            patience=config.early_stop_patience,
-            min_delta=config.early_stop_min_delta,
-        )
-
-        best_seen, best_unseen, best_epoch = 0.0, 0.0, 0
-
-        save_dir = Path("checkpoints") / experiment_name
-        save_dir.mkdir(parents=True, exist_ok=True)
-        ckpt_path = save_dir / f"alpha{alpha}_best.pt"
-
-        for epoch in range(config.max_epochs):
-            loss = trainer.train_epoch(train_loader, alpha, epoch=epoch)
-
-            acc_seen   = evaluator.accuracy(test_dataset)
-            acc_unseen = evaluator.accuracy(unseen_dataset)
-
-            monitor = acc_seen if config.early_stop_metric == "seen" else acc_unseen
-
-            if monitor > (best_seen if config.early_stop_metric == "seen" else best_unseen):
-                best_seen, best_unseen, best_epoch = acc_seen, acc_unseen, epoch
-                torch.save({
-                    "epoch": epoch,
-                    "model_state": model.state_dict(),
-                    "seen": acc_seen,
-                    "unseen": acc_unseen,
-                }, str(ckpt_path))
-
-            logger.info(
-                "[%s][α=%.3f] Epoch %03d | Loss %.4f | Seen %.2f | Unseen %.2f",
-                experiment_name, alpha, epoch, loss, acc_seen, acc_unseen,
-            )
-
-            if config.early_stop and stopper.step(monitor):
-                logger.info("Early stop at epoch %d", epoch)
-                break
-
-        results[alpha] = {
-            "seen":       best_seen,
-            "unseen":     best_unseen,
-            "best_epoch": best_epoch,
-        }
-        logger.info(
-            "[%s][α=%.3f] Best → Seen %.2f | Unseen %.2f (epoch %d)",
-            experiment_name, alpha, best_seen, best_unseen, best_epoch,
-        )
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Experiment runner
+# Comparison runner (Task 3)
 # ---------------------------------------------------------------------------
 
 def run_comparison(
     orig_train_csv:  str = "feature_tracker/v3_train_German.csv",
     synth_train_csv: str = "feature_tracker/v3_train_German_synthetic.csv",
     mixed_train_csv: str = "feature_tracker/v3_train_German_mixed.csv",
+    val_csv:         str = "feature_tracker/v3_val_German.csv",
     test_csv:        str = "feature_tracker/v3_test_German.csv",
     unseen_csv:      str = "feature_tracker/v3_test_English.csv",
+    results_dir:     str = "./results",
 ) -> None:
     """
-    Run experiments A, B, C and print a side-by-side comparison table.
-    Skips an experiment if its CSV file does not exist.
+    Run A / B / C experiments and write comparison.csv.
+    Experiments whose train CSV is missing are skipped automatically.
     """
-    config = ExperimentConfig()
+    base_cfg = ExperimentConfig()
 
     experiments = {
         "A_original":  orig_train_csv,
@@ -180,247 +65,229 @@ def run_comparison(
         "C_mixed":     mixed_train_csv,
     }
 
-    all_results = {}
+    all_results: dict[str, dict] = {}
 
     for name, train_csv in experiments.items():
         if not os.path.exists(train_csv):
-            logger.warning("CSV not found, skipping experiment %s: %s", name, train_csv)
+            logger.warning("Skipping %s — CSV not found: %s", name, train_csv)
             continue
 
-        exp_config = copy.deepcopy(config)
-        all_results[name] = train_and_evaluate(
-            train_csv=train_csv,
-            test_csv=test_csv,
-            unseen_csv=unseen_csv,
-            config=exp_config,
-            experiment_name=name,
+        cfg = copy.deepcopy(base_cfg)
+        cfg.results_dir = os.path.join(results_dir, name)
+
+        logger.info("=== Experiment: %s ===", name)
+        all_results[name] = _train(
+            train_csv  = train_csv,
+            val_csv    = val_csv,
+            test_csv   = test_csv,
+            unseen_csv = unseen_csv,
+            run_id     = name,
+            config     = cfg,
         )
 
-    _print_comparison_table(all_results)
+    _save_comparison_table(all_results, results_dir)
 
 
-def _print_comparison_table(all_results: dict) -> None:
-    """Pretty-print a comparison table across experiments and alphas."""
+def _save_comparison_table(all_results: dict, results_dir: str) -> None:
     if not all_results:
         print("No results to display.")
         return
 
-    print("\n" + "=" * 72)
-    print(f"{'Experiment':<20} {'Alpha':>8} {'Seen Acc':>12} {'Unseen Acc':>12} {'Best Epoch':>12}")
-    print("-" * 72)
-
+    print("\n" + "=" * 82)
+    print(f"{'Experiment':<20} {'Alpha':>8} {'Seen':>10} {'Val':>10} {'Unseen':>10} {'Epoch':>8}")
+    print("-" * 82)
     for exp_name, alpha_results in sorted(all_results.items()):
-        for alpha, metrics in sorted(alpha_results.items()):
+        for alpha, m in sorted(alpha_results.items()):
             print(
-                f"{exp_name:<20} {alpha:>8.3f} "
-                f"{metrics['seen']:>11.2f}% "
-                f"{metrics['unseen']:>11.2f}% "
-                f"{metrics['best_epoch']:>12d}"
+                f"{exp_name:<20} {alpha:>8.4f} "
+                f"{m['seen']:>9.2f}% "
+                f"{m.get('val', 0.0):>9.2f}% "
+                f"{m['unseen']:>9.2f}% "
+                f"{m['epoch']:>8d}"
             )
-        print("-" * 72)
+        print("-" * 82)
+    print("=" * 82 + "\n")
 
-    print("=" * 72 + "\n")
-
-    # Save to CSV for easy reporting
-    out_path = "results_comparison.csv"
-    with open(out_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["experiment", "alpha", "seen_acc", "unseen_acc", "best_epoch"])
+    os.makedirs(results_dir, exist_ok=True)
+    out = os.path.join(results_dir, "comparison.csv")
+    with open(out, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["experiment", "alpha", "seen_acc", "val_acc", "unseen_acc", "best_epoch"])
         for exp_name, alpha_results in sorted(all_results.items()):
-            for alpha, metrics in sorted(alpha_results.items()):
-                writer.writerow([
+            for alpha, m in sorted(alpha_results.items()):
+                w.writerow([
                     exp_name, alpha,
-                    f"{metrics['seen']:.4f}",
-                    f"{metrics['unseen']:.4f}",
-                    metrics["best_epoch"],
+                    round(m["seen"], 4),
+                    round(m.get("val", 0.0), 4),
+                    round(m["unseen"], 4),
+                    m["epoch"],
                 ])
-    logger.info("Results saved → %s", out_path)
+    logger.info("Comparison table -> %s", out)
 
 
 # ---------------------------------------------------------------------------
-# Task 4 (Bonus) — Synthetic data sweep analysis
+# Synthetic data sweep (Task 4 Bonus)
 # ---------------------------------------------------------------------------
 
-def _sample_csv_by_identity(
-    csv_path: str,
-    fraction: float,
-    seed: int = 42,
-) -> list[list[str]]:
-    """
-    Sample `fraction` of rows per identity from a CSV file.
-    Returns a list of rows (including header) to write as a sub-sampled CSV.
-    """
+def _sample_csv_rows(csv_path: str, fraction: float, seed: int) -> list[list]:
+    """Return header + stratified sample of `fraction` rows per label."""
     rng = random.Random(seed)
+    by_label: dict[str, list] = defaultdict(list)
 
-    with open(csv_path, newline="") as f:
+    with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
         header = next(reader)
-        rows_by_label: dict[str, list] = defaultdict(list)
         for row in reader:
-            label = row[2]
-            rows_by_label[label].append(row)
+            by_label[row[2]].append(row)
 
     sampled = [header]
-    for label, rows in rows_by_label.items():
+    for rows in by_label.values():
         n = max(1, math.ceil(len(rows) * fraction))
-        sampled.extend(rng.sample(rows, n))
-
+        sampled.extend(rng.sample(rows, min(n, len(rows))))
     return sampled
 
 
 def synthetic_data_sweep(
     synth_train_csv: str = "feature_tracker/v3_train_German_synthetic.csv",
     orig_train_csv:  str = "feature_tracker/v3_train_German.csv",
+    val_csv:         str = "feature_tracker/v3_val_German.csv",
     test_csv:        str = "feature_tracker/v3_test_German.csv",
     unseen_csv:      str = "feature_tracker/v3_test_English.csv",
-    fractions:       list[float] = (0.10, 0.25, 0.50, 0.75, 1.00),
-    threshold:       float = 0.5,
+    fractions:       tuple = (0.10, 0.25, 0.50, 0.75, 1.00),
+    saturation_threshold: float = 0.5,
+    results_dir:     str = "./results",
 ) -> None:
     """
-    Task 4 (Bonus): Determine how much synthetic data per identity is needed.
+    For each fraction of synthetic data per identity, combine with all original
+    training data, train FOP, and record accuracy.
 
-    For each fraction in `fractions`:
-      1. Sample that fraction of synthetic rows per identity
-      2. Combine with original training data
-      3. Train FOP and record seen/unseen accuracy
-
-    Plots accuracy vs. fraction and prints the saturation point (the smallest
-    fraction where adding more synthetic data yields < `threshold`% accuracy gain).
-
-    Args:
-        synth_train_csv : CSV with all synthetic German training rows
-        orig_train_csv  : CSV with original German training rows
-        test_csv        : CSV for seen-language evaluation
-        unseen_csv      : CSV for unseen-language evaluation
-        fractions       : fractions of synthetic data to evaluate
-        threshold       : minimum acc gain (%) to consider non-saturated
+    Finds the saturation point where adding more synthetic data yields
+    < saturation_threshold% accuracy gain.
     """
     if not os.path.exists(synth_train_csv):
         logger.error("Synthetic CSV not found: %s", synth_train_csv)
         return
 
-    config = ExperimentConfig()
-    config.early_stop_patience = 5   # faster sweeps
-    config.max_epochs = 100
+    base_cfg = ExperimentConfig()
+    base_cfg.early_stop_patience = 5
+    base_cfg.max_epochs = 100
 
-    sweep_results = {}   # fraction → {'seen': float, 'unseen': float}
-    tmp_dir = Path("sweep_tmp")
-    tmp_dir.mkdir(exist_ok=True)
+    tmp_dir = os.path.join(results_dir, "sweep_tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    sweep_results: dict[float, dict] = {}
+
+    # Read original train rows once
+    with open(orig_train_csv, newline="", encoding="utf-8") as f:
+        orig_rows = list(csv.reader(f))
 
     for frac in fractions:
-        logger.info("=== Sweep: %.0f%% synthetic data ===", frac * 100)
+        logger.info("=== Sweep %.0f%% synthetic ===", frac * 100)
 
-        # Sub-sample synthetic rows
-        synth_rows = _sample_csv_by_identity(synth_train_csv, frac, seed=config.seed)
+        synth_rows = _sample_csv_rows(synth_train_csv, frac, seed=base_cfg.seed)
+        combined = orig_rows + synth_rows[1:]  # skip duplicate header
 
-        # Combine with original
-        with open(orig_train_csv, newline="") as f:
-            orig_rows = list(csv.reader(f))
-
-        combined = orig_rows + synth_rows[1:]  # skip duplicate header from synth
-
-        tmp_csv = tmp_dir / f"mixed_frac{int(frac*100):03d}.csv"
-        with open(str(tmp_csv), "w", newline="") as f:
+        tmp_csv = os.path.join(tmp_dir, f"mixed_frac{int(frac*100):03d}.csv")
+        with open(tmp_csv, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerows(combined)
 
-        alpha_results = train_and_evaluate(
-            train_csv=str(tmp_csv),
-            test_csv=test_csv,
-            unseen_csv=unseen_csv,
-            config=copy.deepcopy(config),
-            experiment_name=f"sweep_{int(frac*100)}pct",
+        cfg = copy.deepcopy(base_cfg)
+        cfg.results_dir = os.path.join(results_dir, f"sweep_{int(frac*100):03d}pct")
+
+        alpha_results = _train(
+            train_csv  = tmp_csv,
+            val_csv    = val_csv,
+            test_csv   = test_csv,
+            unseen_csv = unseen_csv,
+            run_id     = f"sweep_{int(frac*100)}pct",
+            config     = cfg,
         )
+        sweep_results[frac] = alpha_results[list(alpha_results.keys())[0]]
 
-        # Use the first (or only) alpha result
-        first_alpha = list(alpha_results.keys())[0]
-        sweep_results[frac] = alpha_results[first_alpha]
-
-    # --- Print sweep table ---
-    print("\n" + "=" * 60)
-    print(f"{'Synthetic %':>12} {'Seen Acc':>12} {'Unseen Acc':>12}")
-    print("-" * 60)
+    # ---- print & save sweep table ----
+    print("\n" + "=" * 62)
+    print(f"{'Synth %':>10} {'Seen':>10} {'Val':>10} {'Unseen':>10}")
+    print("-" * 62)
     for frac in sorted(sweep_results):
         m = sweep_results[frac]
-        print(f"{frac*100:>11.0f}% {m['seen']:>11.2f}% {m['unseen']:>11.2f}%")
-    print("=" * 60)
+        print(f"{frac*100:>9.0f}% {m['seen']:>9.2f}% {m.get('val',0):>9.2f}% {m['unseen']:>9.2f}%")
+    print("=" * 62)
 
-    # --- Find saturation point ---
+    # Saturation point
     sorted_fracs = sorted(sweep_results)
-    saturation_frac = sorted_fracs[-1]  # default: all data needed
-
+    saturation = sorted_fracs[-1]
     for i in range(1, len(sorted_fracs)):
-        prev = sweep_results[sorted_fracs[i - 1]]["seen"]
-        curr = sweep_results[sorted_fracs[i]]["seen"]
-        if curr - prev < threshold:
-            saturation_frac = sorted_fracs[i - 1]
+        gain = sweep_results[sorted_fracs[i]]["seen"] - sweep_results[sorted_fracs[i-1]]["seen"]
+        if gain < saturation_threshold:
+            saturation = sorted_fracs[i - 1]
             break
+    print(f"\nSaturation at {saturation*100:.0f}% synthetic data per identity "
+          f"(gain < {saturation_threshold}% beyond this)\n")
 
-    print(f"\nSaturation point: {saturation_frac*100:.0f}% of synthetic data per identity")
-    print(f"(Adding more than {saturation_frac*100:.0f}% yields < {threshold}% accuracy gain)\n")
-
-    # --- Save sweep results ---
-    sweep_csv = "results_sweep.csv"
-    with open(sweep_csv, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["synth_fraction", "seen_acc", "unseen_acc", "best_epoch"])
+    sweep_csv = os.path.join(results_dir, "sweep.csv")
+    os.makedirs(results_dir, exist_ok=True)
+    with open(sweep_csv, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["synth_fraction", "seen_acc", "val_acc", "unseen_acc", "best_epoch"])
         for frac in sorted(sweep_results):
             m = sweep_results[frac]
-            writer.writerow([frac, f"{m['seen']:.4f}", f"{m['unseen']:.4f}", m["best_epoch"]])
-    logger.info("Sweep results saved → %s", sweep_csv)
+            w.writerow([frac, round(m["seen"], 4), round(m.get("val", 0), 4),
+                        round(m["unseen"], 4), m["epoch"]])
+    logger.info("Sweep results -> %s", sweep_csv)
 
-    # --- Optional matplotlib plot ---
     try:
         import matplotlib.pyplot as plt
-
-        fracs = [f * 100 for f in sorted(sweep_results)]
-        seen_accs   = [sweep_results[f / 100]["seen"]   for f in fracs]
-        unseen_accs = [sweep_results[f / 100]["unseen"] for f in fracs]
-
+        fracs_pct = [f * 100 for f in sorted(sweep_results)]
         plt.figure(figsize=(8, 5))
-        plt.plot(fracs, seen_accs,   marker="o", label="Seen (German)")
-        plt.plot(fracs, unseen_accs, marker="s", label="Unseen (English)")
-        plt.axvline(x=saturation_frac * 100, color="gray", linestyle="--",
-                    label=f"Saturation @ {saturation_frac*100:.0f}%")
+        plt.plot(fracs_pct, [sweep_results[f/100]["seen"]   for f in fracs_pct], "o-", label="Seen (German)")
+        plt.plot(fracs_pct, [sweep_results[f/100]["unseen"] for f in fracs_pct], "s-", label="Unseen (English)")
+        plt.axvline(saturation * 100, color="gray", ls="--",
+                    label=f"Saturation @ {saturation*100:.0f}%")
         plt.xlabel("Synthetic Data per Identity (%)")
         plt.ylabel("Accuracy (%)")
-        plt.title("Synthetic Data Amount vs. Accuracy")
+        plt.title("Effect of Synthetic Data Amount on Accuracy")
         plt.legend()
         plt.tight_layout()
-        plt.savefig("results_sweep.png", dpi=150)
-        logger.info("Plot saved → results_sweep.png")
-        plt.show()
-
+        plot_path = os.path.join(results_dir, "sweep.png")
+        plt.savefig(plot_path, dpi=150)
+        logger.info("Sweep plot -> %s", plot_path)
     except ImportError:
-        logger.warning("matplotlib not installed — skipping plot")
+        pass
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# CLI
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run FOP baseline comparison experiments")
-    parser.add_argument("--sweep", action="store_true",
-                        help="Run Task 4 bonus: synthetic data amount sweep analysis")
-    parser.add_argument("--orig_csv",  default="feature_tracker/v3_train_German.csv")
-    parser.add_argument("--synth_csv", default="feature_tracker/v3_train_German_synthetic.csv")
-    parser.add_argument("--mixed_csv", default="feature_tracker/v3_train_German_mixed.csv")
-    parser.add_argument("--test_csv",  default="feature_tracker/v3_test_German.csv")
-    parser.add_argument("--unseen_csv",default="feature_tracker/v3_test_English.csv")
+    parser = argparse.ArgumentParser(description="FOP baseline experiments")
+    parser.add_argument("--sweep",       action="store_true",
+                        help="Run Task 4 bonus: synthetic data sweep")
+    parser.add_argument("--orig_csv",    default="feature_tracker/v3_train_German.csv")
+    parser.add_argument("--synth_csv",   default="feature_tracker/v3_train_German_synthetic.csv")
+    parser.add_argument("--mixed_csv",   default="feature_tracker/v3_train_German_mixed.csv")
+    parser.add_argument("--val_csv",     default="feature_tracker/v3_val_German.csv")
+    parser.add_argument("--test_csv",    default="feature_tracker/v3_test_German.csv")
+    parser.add_argument("--unseen_csv",  default="feature_tracker/v3_test_English.csv")
+    parser.add_argument("--results_dir", default="./results")
     args = parser.parse_args()
 
     if args.sweep:
         synthetic_data_sweep(
-            synth_train_csv=args.synth_csv,
-            orig_train_csv=args.orig_csv,
-            test_csv=args.test_csv,
-            unseen_csv=args.unseen_csv,
+            synth_train_csv = args.synth_csv,
+            orig_train_csv  = args.orig_csv,
+            val_csv         = args.val_csv,
+            test_csv        = args.test_csv,
+            unseen_csv      = args.unseen_csv,
+            results_dir     = args.results_dir,
         )
     else:
         run_comparison(
-            orig_train_csv=args.orig_csv,
-            synth_train_csv=args.synth_csv,
-            mixed_train_csv=args.mixed_csv,
-            test_csv=args.test_csv,
-            unseen_csv=args.unseen_csv,
+            orig_train_csv  = args.orig_csv,
+            synth_train_csv = args.synth_csv,
+            mixed_train_csv = args.mixed_csv,
+            val_csv         = args.val_csv,
+            test_csv        = args.test_csv,
+            unseen_csv      = args.unseen_csv,
+            results_dir     = args.results_dir,
         )

@@ -1,0 +1,93 @@
+# Conda environment for the POLYSIM / FOP pipeline
+#
+# Target hardware: Xiaomi Gaming Laptop 2018 / GTX 1060 6GB (Pascal sm_61)
+#                  16 GB RAM / Windows 10 or 11
+#
+# ── Setup (run once) ────────────────────────────────────────────────────────
+#   1. Install Miniconda (Python 3.10 installer):
+#        https://repo.anaconda.com/miniconda/Miniconda3-py310_24.1.2-0-Windows-x86_64.exe
+#
+#   2. Open "Anaconda Prompt" and run:
+#        conda env create -f environment.yml
+#        conda activate polysim_env
+#
+#   3. (Optional) Wav2Lip for lip-sync — skip if not needed:
+#        cd Poly-sim/FOP
+#        git clone https://github.com/Rudrabha/Wav2Lip Wav2Lip
+#        # Download wav2lip_gan.pth from HuggingFace and place in Wav2Lip/checkpoints/
+#
+# ── Run experiments ─────────────────────────────────────────────────────────
+#   conda activate polysim_env
+#   cd Poly-sim/FOP
+#   python run_experiments.py                  # Task 3: A/B/C comparison
+#   python run_experiments.py --sweep          # Task 4: synthetic data sweep
+# ────────────────────────────────────────────────────────────────────────────
+
+name: polysim_env
+
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+variables:
+  # Prevents libiomp5md.dll double-load crash that occurs when
+  # conda MKL and PyTorch both ship OpenMP on the same Windows install.
+  KMP_DUPLICATE_LIB_OK: "TRUE"
+
+dependencies:
+  # ── Python ────────────────────────────────────────────────────────────────
+  - python=3.10.14
+  - pip=24.0
+
+  # ── CUDA 11.8 — last release with Pascal (sm_61) support ──────────────────
+  - cudatoolkit=11.8.0
+
+  # ── FFmpeg system binary (avoids Windows DLL issues from pip build) ────────
+  - conda-forge::ffmpeg=6.1.1
+
+  # ── PyTorch 2.2 pinned to CUDA 11.8 wheels ────────────────────────────────
+  - pytorch::pytorch=2.2.0=py3.10_cuda11.8_cudnn8.7.0_0
+  - pytorch::torchaudio=2.2.0=py310_cu118
+  - pytorch::torchvision=0.17.0=py310_cu118
+
+  # ── Scientific stack ───────────────────────────────────────────────────────
+  - conda-forge::numpy=1.26.4
+  - conda-forge::pandas=2.2.1
+  - conda-forge::scipy=1.13.0
+  - conda-forge::scikit-learn=1.4.2
+  - conda-forge::matplotlib=3.8.4
+  - conda-forge::tqdm=4.66.2
+
+  # ── Pip-only packages ─────────────────────────────────────────────────────
+  - pip:
+    # Pin torch here so pip's resolver cannot downgrade the conda install.
+    # facenet-pytorch and speechbrain both accept torch>=1.0 so this is safe.
+    - torch==2.2.0
+    - torchaudio==2.2.0
+    - torchvision==0.17.0
+
+    # Speech recognition (Whisper)
+    - openai-whisper==20240930
+
+    # Translation — no API key required
+    - deep-translator==1.11.4
+
+    # TTS — Microsoft Edge Neural TTS (no compilation, Windows-safe)
+    - edge-tts==7.2.8
+
+    # Speaker embeddings (ECAPA-TDNN)
+    - speechbrain==1.0.0
+
+    # Face embeddings (FaceNet / VGGFace2)
+    - facenet-pytorch==2.6.0
+
+    # Video / audio I/O
+    - opencv-python==4.9.0.80
+    - soundfile==0.12.1
+    - imageio-ffmpeg==0.5.1   # self-contained ffmpeg binary used by pipeline.py
+    - ffmpeg-python==0.2.0
+
+    # Utilities
+    - gdown==5.2.0
