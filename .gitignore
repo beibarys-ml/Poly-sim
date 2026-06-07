@@ -1,0 +1,40 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+.env
+.venv/
+venv/
+conda_env/
+
+# large features
+ecappafeats/
+facenetfeats/
+ecappafeats_25frame/
+facenetfeats_25frame/
+vjepa_feats/
+external_features/
+
+# checkpoints and logs
+checkpoints/
+logs/
+outputs/
+runs/
+wandb/
+
+# model weights
+*.pt
+*.pth
+*.ckpt
+
+# arrays and media
+*.npy
+*.npz
+*.mp4
+*.wav
+*.avi
+*.mkv
+
+# OS files
+.DS_Store
+Thumbs.db
