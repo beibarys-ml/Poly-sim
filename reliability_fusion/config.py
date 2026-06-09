@@ -39,7 +39,10 @@ DROPOUT = 0.3
 
 # Face-dropout probability during training.
 # This simulates missing visual modality.
-FACE_DROPOUT_P = 0.3
+FACE_DROPOUT_P = 0.2
+
+#for dual loss formulation
+AUDIO_ONLY_LOSS_WEIGHT = 0.2
 
 # Paths
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"

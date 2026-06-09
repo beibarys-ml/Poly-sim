@@ -196,7 +196,7 @@ def main():
     modality = "audio_only" if audio_only else "audio_face"
 
     if args.checkpoint is None:
-        checkpoint_path = CHECKPOINT_DIR / f"reliability_fusion_{train_language}_best.pt"
+        checkpoint_path = CHECKPOINT_DIR / f"reliability_fusion_stageA_h512_fd02_lam02_{train_language}_best.pt"
     else:
         checkpoint_path = Path(args.checkpoint)
 

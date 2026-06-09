@@ -1,0 +1,9 @@
+train_language,test_language,setting,modality,accuracy,loss,audio_reliability_mean,face_reliability_mean,num_samples,checkpoint
+English,English,P3,audio_face,0.9094827586206896,0.3606737769883254,0.994338870048523,0.9014621376991272,232,C:\Users\beiba\Desktop\reliability-fusion-project\checkpoints\reliability_fusion_h256_fd04_English_best.pt
+English,English,P4,audio_only,0.7758620689655172,0.7781775059371159,0.994338870048523,0.0,232,C:\Users\beiba\Desktop\reliability-fusion-project\checkpoints\reliability_fusion_h256_fd04_English_best.pt
+English,German,P5,audio_face,0.8187134502923976,0.6163900724628515,0.9945999979972839,0.9013362526893616,342,C:\Users\beiba\Desktop\reliability-fusion-project\checkpoints\reliability_fusion_h256_fd04_English_best.pt
+English,German,P6,audio_only,0.6783625730994152,1.1924824732088903,0.9945999979972839,0.0,342,C:\Users\beiba\Desktop\reliability-fusion-project\checkpoints\reliability_fusion_h256_fd04_English_best.pt
+German,German,P3,audio_face,0.9239766081871345,0.31294501780216416,0.9893501400947571,0.8957421183586121,342,C:\Users\beiba\Desktop\reliability-fusion-project\checkpoints\reliability_fusion_h256_fd04_German_best.pt
+German,German,P4,audio_only,0.7807017543859649,0.9574266925933417,0.9893501400947571,0.0,342,C:\Users\beiba\Desktop\reliability-fusion-project\checkpoints\reliability_fusion_h256_fd04_German_best.pt
+German,English,P5,audio_face,0.9439655172413793,0.33806716059816294,0.9894737601280212,0.8971977829933167,232,C:\Users\beiba\Desktop\reliability-fusion-project\checkpoints\reliability_fusion_h256_fd04_German_best.pt
+German,English,P6,audio_only,0.8146551724137931,1.035044355639096,0.9894737601280212,0.0,232,C:\Users\beiba\Desktop\reliability-fusion-project\checkpoints\reliability_fusion_h256_fd04_German_best.pt

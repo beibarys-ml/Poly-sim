@@ -13,6 +13,7 @@ from reliability_fusion.config import (
     HIDDEN_DIM,
     DROPOUT,
     FACE_DROPOUT_P,
+    AUDIO_ONLY_LOSS_WEIGHT,
     BATCH_SIZE,
     NUM_EPOCHS,
     LEARNING_RATE,
@@ -48,11 +49,38 @@ def infer_num_classes(csv_path: Path) -> int:
     return int(df["label"].max()) + 1
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device):
+def train_one_epoch(
+    model,
+    dataloader,
+    criterion,
+    optimizer,
+    device,
+    audio_only_loss_weight: float = 0.3,
+):
+    """
+    Stage A training objective:
+
+        L = CE_full + lambda * CE_audio_only
+
+    CE_full:
+        prediction using audio + face
+
+    CE_audio_only:
+        prediction using audio + zeroed face
+
+    This explicitly teaches the model to classify correctly when
+    the face modality is missing, instead of relying only on random
+    face dropout.
+    """
+
     model.train()
 
     total_loss = 0.0
-    total_correct = 0
+    total_full_loss = 0.0
+    total_audio_loss = 0.0
+
+    total_correct_full = 0
+    total_correct_audio = 0
     total_samples = 0
 
     for batch in dataloader:
@@ -62,22 +90,48 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
 
         optimizer.zero_grad()
 
-        logits = model(audio, face, force_audio_only=False)
-        loss = criterion(logits, labels)
+        # Full modality forward: audio + face
+        logits_full = model(
+            audio,
+            face,
+            force_audio_only=False,
+        )
+        loss_full = criterion(logits_full, labels)
+
+        # Audio-only forward: audio + missing face
+        logits_audio = model(
+            audio,
+            face,
+            force_audio_only=True,
+        )
+        loss_audio = criterion(logits_audio, labels)
+
+        loss = loss_full + audio_only_loss_weight * loss_audio
 
         loss.backward()
         optimizer.step()
 
-        preds = logits.argmax(dim=1)
+        preds_full = logits_full.argmax(dim=1)
+        preds_audio = logits_audio.argmax(dim=1)
 
-        total_loss += loss.item() * labels.size(0)
-        total_correct += (preds == labels).sum().item()
-        total_samples += labels.size(0)
+        batch_size = labels.size(0)
+
+        total_loss += loss.item() * batch_size
+        total_full_loss += loss_full.item() * batch_size
+        total_audio_loss += loss_audio.item() * batch_size
+
+        total_correct_full += (preds_full == labels).sum().item()
+        total_correct_audio += (preds_audio == labels).sum().item()
+        total_samples += batch_size
 
     avg_loss = total_loss / total_samples
-    avg_acc = total_correct / total_samples
+    avg_full_loss = total_full_loss / total_samples
+    avg_audio_loss = total_audio_loss / total_samples
 
-    return avg_loss, avg_acc
+    avg_full_acc = total_correct_full / total_samples
+    avg_audio_acc = total_correct_audio / total_samples
+
+    return avg_loss, avg_full_loss, avg_audio_loss, avg_full_acc, avg_audio_acc
 
 
 @torch.no_grad()
@@ -222,43 +276,62 @@ def main():
         weight_decay=WEIGHT_DECAY,
     )
 
-    best_val_acc = -1.0
+    best_val_score = -1.0
+    best_val_full_acc = -1.0
+    best_val_audio_acc = -1.0
     best_epoch = 0
     epochs_without_improvement = 0
 
-    checkpoint_path = CHECKPOINT_DIR / f"reliability_fusion_{train_language}_best.pt"
+    checkpoint_path = CHECKPOINT_DIR / f"reliability_fusion_stageA_h512_fd02_lam02_{train_language}_best.pt"
 
     for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc = train_one_epoch(
-            model=model,
-            dataloader=train_loader,
-            criterion=criterion,
-            optimizer=optimizer,
-            device=device,
-        )
+        train_loss, train_full_loss, train_audio_loss, train_full_acc, train_audio_acc = train_one_epoch(
+        model=model,
+        dataloader=train_loader,
+        criterion=criterion,
+        optimizer=optimizer,
+        device=device,
+        audio_only_loss_weight=AUDIO_ONLY_LOSS_WEIGHT,
+    )
 
-        val_loss, val_acc, val_audio_rel, val_face_rel = validate(
+        val_full_loss, val_full_acc, val_full_audio_rel, val_full_face_rel = validate(
+    model=model,
+    dataloader=val_loader,
+    criterion=criterion,
+    device=device,
+    audio_only=False,
+)
+
+        val_audio_loss, val_audio_acc, val_audio_audio_rel, val_audio_face_rel = validate(
             model=model,
             dataloader=val_loader,
             criterion=criterion,
             device=device,
-            audio_only=False,
+            audio_only=True,
         )
+
+        val_score = 0.5 * val_full_acc + 0.5 * val_audio_acc
 
         print(
-            f"Epoch {epoch:03d}/{args.epochs} | "
-            f"train loss {train_loss:.4f} | "
-            f"train acc {train_acc:.4f} | "
-            f"val loss {val_loss:.4f} | "
-            f"val acc {val_acc:.4f} | "
-            f"val rel audio {val_audio_rel:.4f} | "
-            f"val rel face {val_face_rel:.4f}"
-        )
+                f"Epoch {epoch:03d}/{args.epochs} | "
+                f"train loss {train_loss:.4f} | "
+                f"train full CE {train_full_loss:.4f} | "
+                f"train audio CE {train_audio_loss:.4f} | "
+                f"train full acc {train_full_acc:.4f} | "
+                f"train audio acc {train_audio_acc:.4f} | "
+                f"val full acc {val_full_acc:.4f} | "
+                f"val audio acc {val_audio_acc:.4f} | "
+                f"val score {val_score:.4f} | "
+                f"val rel audio {val_full_audio_rel:.4f} | "
+                f"val rel face {val_full_face_rel:.4f}"
+            )
 
-        improved = val_acc > best_val_acc + args.min_delta
+        improved = val_score > best_val_score + args.min_delta
 
         if improved:
-            best_val_acc = val_acc
+            best_val_score = val_score
+            best_val_full_acc = val_full_acc
+            best_val_audio_acc = val_audio_acc
             best_epoch = epoch
             epochs_without_improvement = 0
 
@@ -273,7 +346,10 @@ def main():
                     "hidden_dim": HIDDEN_DIM,
                     "dropout": DROPOUT,
                     "face_dropout_p": FACE_DROPOUT_P,
-                    "best_val_acc": best_val_acc,
+                    "best_val_score": best_val_score,
+                    "best_val_full_acc": best_val_full_acc,
+                    "best_val_audio_acc": best_val_audio_acc,
+                    "audio_only_loss_weight": AUDIO_ONLY_LOSS_WEIGHT,
                     "epoch": epoch,
                 },
                 checkpoint_path,
@@ -291,7 +367,9 @@ def main():
             print("=" * 80)
             print(
                 f"Early stopping triggered at epoch {epoch}. "
-                f"Best epoch: {best_epoch}, best val acc: {best_val_acc:.4f}"
+                f"Best epoch: {best_epoch}, best val score: {best_val_score:.4f}, "
+                f"best full acc: {best_val_full_acc:.4f}, "
+                f"best audio acc: {best_val_audio_acc:.4f}"
             )
             print("=" * 80)
             break
@@ -299,7 +377,9 @@ def main():
 
     print("=" * 80)
     print(f"Finished training {train_language} model.")
-    print(f"Best validation accuracy: {best_val_acc:.4f}")
+    print(f"Best validation score: {best_val_score:.4f}")
+    print(f"Best validation full accuracy: {best_val_full_acc:.4f}")
+    print(f"Best validation audio-only accuracy: {best_val_audio_acc:.4f}")
     print(f"Best epoch: {best_epoch}")
     print(f"Best checkpoint: {checkpoint_path}")
     print("=" * 80)
